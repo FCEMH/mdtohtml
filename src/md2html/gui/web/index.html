@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MD2HTML 离线 HTML 生成器</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <div class="app-layout">
+    <!-- Header -->
+    <header class="app-header">
+      <div class="header-left">
+        <span class="logo">MD2HTML</span>
+        <span class="badge">离线 HTML 生成器</span>
+      </div>
+      <div class="header-right">
+        <button id="btn-env-check" class="env-badge" title="点击查看环境依赖详情">
+          <span class="dot"></span>
+          <span id="env-status-text">环境检查：检查中...</span>
+        </button>
+      </div>
+    </header>
+
+    <!-- Subheader -->
+    <div class="subheader">
+      <h1 class="main-title">把笔记或 AI 分享内容，整理为一个 HTML</h1>
+      <p class="sub-title">选择来源 → 确认内容与保存位置 → 生成后直接打开</p>
+    </div>
+
+    <!-- Main Workspace -->
+    <main class="main-content">
+      <!-- Left Column: Source & Settings -->
+      <div class="col-left">
+        <!-- 01 内容来源 -->
+        <section class="card">
+          <h2 class="card-title"><span class="step-num">01</span> 内容来源</h2>
+          
+          <!-- Segmented Tab Switch -->
+          <div class="segmented-control" role="tablist">
+            <button class="segment-btn" data-mode="file" role="tab">单个文件</button>
+            <button class="segment-btn active" data-mode="folder" role="tab">整个文件夹</button>
+            <button class="segment-btn" data-mode="chatgpt" role="tab">AI 分享链接</button>
+          </div>
+
+          <!-- Tab Pane: 整个文件夹 -->
+          <div class="tab-pane active" id="pane-folder">
+            <div class="form-group">
+              <label for="folder-path" class="form-label">笔记文件夹</label>
+              <div class="input-with-btn">
+                <input type="text" id="folder-path" class="form-input" placeholder="/示例/控制理论笔记/">
+                <button type="button" class="btn btn-secondary" id="btn-browse-folder">浏览…</button>
+              </div>
+            </div>
+            <div class="checkbox-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="folder-recursive" checked disabled>
+                <span>包含子文件夹中的 Markdown</span>
+              </label>
+              <p class="form-hint">自动跳过隐藏目录和已有生成目录</p>
+            </div>
+          </div>
+
+          <!-- Tab Pane: 单个文件 -->
+          <div class="tab-pane" id="pane-file">
+            <div class="form-group">
+              <label for="file-path" class="form-label">Markdown 文件</label>
+              <div class="input-with-btn">
+                <input type="text" id="file-path" class="form-input" placeholder="/示例/控制理论笔记/00_总纲.md">
+                <button type="button" class="btn btn-secondary" id="btn-browse-file">浏览…</button>
+              </div>
+            </div>
+            <div class="form-group">
+              <label for="file-res-root" class="form-label">资源根目录 <span class="hint-inline">(可选，用于解析 ../ 相对图片)</span></label>
+              <div class="input-with-btn">
+                <input type="text" id="file-res-root" class="form-input" placeholder="默认使用所选文件所在目录">
+                <button type="button" class="btn btn-secondary" id="btn-browse-res-root">选择…</button>
+              </div>
+            </div>
+            <div class="checkbox-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="file-force-include">
+                <span>即使被标为草稿或排除也强制收录该文件</span>
+              </label>
+            </div>
+          </div>
+
+          <!-- Tab Pane: AI 分享链接 -->
+          <div class="tab-pane" id="pane-chatgpt">
+            <div class="form-group">
+              <label for="chatgpt-url" class="form-label">AI 分享链接</label>
+              <div class="input-with-btn">
+                <input type="text" id="chatgpt-url" class="form-input" placeholder="https://chatgpt.com/s/t_... 或 https://chatgpt.com/share/...">
+                <button type="button" class="btn btn-secondary" id="btn-fetch-chatgpt">读取内容</button>
+              </div>
+              <p class="form-hint">当前支持公开 ChatGPT 分享链接；将自动提取 Markdown、公式并本地化图片</p>
+            </div>
+          </div>
+        </section>
+
+        <!-- 02 生成设置 -->
+        <section class="card">
+          <h2 class="card-title"><span class="step-num">02</span> 生成设置</h2>
+
+          <div class="form-group">
+            <label for="doc-title" class="form-label">文档标题</label>
+            <input type="text" id="doc-title" class="form-input" placeholder="文档标题（默认自动匹配）">
+          </div>
+
+          <div class="form-group">
+            <label for="output-path" class="form-label">保存到</label>
+            <div class="input-with-btn">
+              <input type="text" id="output-path" class="form-input" placeholder="/path/to/output.html">
+              <button type="button" class="btn btn-secondary" id="btn-save-as">另存为</button>
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group col-half">
+              <label for="toc-depth-select" class="form-label">目录层级</label>
+              <select id="toc-depth-select" class="form-select">
+                <option value="1">1</option>
+                <option value="2">2</option>
+                <option value="3" selected>3</option>
+                <option value="4">4</option>
+                <option value="5">5</option>
+                <option value="6">6</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-row space-between items-center">
+            <label class="checkbox-label">
+              <input type="checkbox" id="search-enabled" checked>
+              <span>启用全文搜索</span>
+            </label>
+            <button type="button" class="link-btn" id="btn-toggle-advanced">高级设置 &gt;</button>
+          </div>
+
+          <!-- Advanced Settings Collapse -->
+          <div class="advanced-settings-drawer" id="advanced-drawer" style="display: none;">
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="strict-mode">
+                <span>严格模式（有警告即中断构建）</span>
+              </label>
+            </div>
+            <div class="form-group">
+              <label for="config-path" class="form-label">配置文件路径 (可选)</label>
+              <div class="input-with-btn">
+                <input type="text" id="config-path" class="form-input" placeholder="默认读取根目录下 md2html.yml">
+                <button type="button" class="btn btn-secondary" id="btn-browse-config">浏览…</button>
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="skip-draft" checked>
+                <span>自动跳过草稿 Markdown (draft: true)</span>
+              </label>
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <!-- Right Column: Content Confirmation & Preview -->
+      <div class="col-right">
+        <section class="card preview-card">
+          <div class="card-header-row">
+            <div class="header-title-group">
+              <h2 class="card-title preview-title">内容目录</h2>
+              <span class="sort-tip" id="sort-tip">(可拖拽排序)</span>
+            </div>
+            <div class="header-action-group">
+              <div class="sort-wrap" id="sort-controls">
+                <label for="sort-select" class="sort-label">排序:</label>
+                <select id="sort-select" class="form-select sort-select" title="选择排序方式">
+                  <option value="default" selected>默认顺序</option>
+                  <option value="name-asc">名称 A → Z</option>
+                  <option value="name-desc">名称 Z → A</option>
+                  <option value="time-desc">最新修改</option>
+                  <option value="time-asc">最早修改</option>
+                  <option value="size-desc">大小 (大到小)</option>
+                  <option value="size-asc">大小 (小到大)</option>
+                  <option value="custom" disabled hidden>自定义排序</option>
+                </select>
+              </div>
+              <button type="button" class="btn btn-sm btn-light" id="btn-rescan">重新扫描</button>
+            </div>
+          </div>
+
+          <div class="tree-header-bar">
+            <div class="summary-meta" id="summary-meta">
+              尚未选择输入来源
+            </div>
+            <div class="col-header-merge" id="col-header-merge" title="点击可全选 / 全不选">合并</div>
+          </div>
+
+          <!-- Tree View or Message List -->
+          <div class="tree-container" id="tree-container">
+            <div class="empty-state">
+              <div class="empty-icon">📁</div>
+              <p>请在左侧选择文件、文件夹或输入 AI 分享链接</p>
+            </div>
+          </div>
+
+          <div class="tree-footer-note" id="tree-footer-note">
+            图片将随 HTML 保存；目录中的顺序即输出顺序。
+          </div>
+
+          <!-- Highlight Box -->
+          <div class="highlight-box">
+            <h3 class="highlight-title">单文件，离线阅读</h3>
+            <p class="highlight-desc">正文、图片、公式、目录与搜索都收录在最终 HTML 中。</p>
+            <p class="highlight-hint">生成后：打开 HTML / 打开所在文件夹 / 查看诊断</p>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <!-- Bottom Status & Action Bar -->
+    <footer class="app-bottom-bar">
+      <div class="bottom-left">
+        <div class="status-indicator">
+          <span class="status-badge status-ready" id="status-badge">准备就绪</span>
+        </div>
+        <div class="status-detail-group">
+          <div class="status-message" id="status-message">生成进度将在此显示，诊断信息可展开查看。</div>
+          <div class="progress-bar-wrap" id="progress-wrap" style="display: none;">
+            <div class="progress-bar" id="progress-bar" style="width: 0%;"></div>
+          </div>
+        </div>
+      </div>
+      <div class="bottom-right">
+        <!-- Idle Actions -->
+        <div class="action-group" id="actions-idle">
+          <button type="button" class="btn btn-secondary btn-lg" id="btn-check-content">检查内容</button>
+          <button type="button" class="btn btn-primary btn-lg" id="btn-build">生成 HTML</button>
+        </div>
+
+        <!-- Running Actions -->
+        <div class="action-group" id="actions-running" style="display: none;">
+          <button type="button" class="btn btn-danger btn-lg" id="btn-cancel">取消生成</button>
+        </div>
+
+        <!-- Finished Actions -->
+        <div class="action-group" id="actions-finished" style="display: none;">
+          <button type="button" class="btn btn-secondary" id="btn-view-diag">查看诊断</button>
+          <button type="button" class="btn btn-secondary" id="btn-open-folder">打开所在文件夹</button>
+          <button type="button" class="btn btn-primary" id="btn-open-html">打开 HTML</button>
+        </div>
+      </div>
+    </footer>
+
+    <!-- Diagnostic & Environment Modal -->
+    <div class="modal-backdrop" id="modal-diag" style="display: none;">
+      <div class="modal-window">
+        <div class="modal-header">
+          <h3 class="modal-title" id="modal-title">诊断与环境信息</h3>
+          <button type="button" class="modal-close" id="btn-close-modal">&times;</button>
+        </div>
+        <div class="modal-body" id="modal-body">
+          <!-- Populated dynamically -->
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" id="btn-modal-ok">关闭</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

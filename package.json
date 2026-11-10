@@ -1,0 +1,16 @@
+{
+  "name": "md2html-build-assets",
+  "version": "0.1.1",
+  "private": true,
+  "description": "Build-time KaTeX assets; no browser runtime dependencies",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "vendor": "node scripts/vendor_katex.mjs",
+    "postinstall": "node scripts/vendor_katex.mjs"
+  },
+  "dependencies": {
+    "katex": "0.19.1"
+  }
+}

@@ -1,0 +1,13 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const source = path.join(root, 'node_modules/katex');
+const target = path.join(root, 'src/md2html/vendor');
+fs.mkdirSync(path.join(target, 'fonts'), { recursive: true });
+for (const name of ['katex.min.js', 'katex.min.css']) fs.copyFileSync(path.join(source, 'dist', name), path.join(target, name));
+for (const name of fs.readdirSync(path.join(source, 'dist/fonts')).filter(n => n.endsWith('.woff2'))) fs.copyFileSync(path.join(source, 'dist/fonts', name), path.join(target, 'fonts', name));
+fs.copyFileSync(path.join(source, 'LICENSE'), path.join(target, 'KATEX-LICENSE.txt'));
+const meta = JSON.parse(fs.readFileSync(path.join(source, 'package.json'), 'utf8'));
+fs.writeFileSync(path.join(target, 'version.json'), JSON.stringify({ katex: meta.version }) + '\n');
+console.log(`Vendored KaTeX ${meta.version} (CSS, renderer, WOFF2 fonts, MIT license)`);

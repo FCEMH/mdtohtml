@@ -1,0 +1,18 @@
+# 本地运行环境与依赖
+/.venv/
+/node_modules/
+/.playwright-browsers/
+
+# 缓存与安装元数据
+/.pytest_cache/
+/.ruff_cache/
+__pycache__/
+/src/md2html_offline.egg-info/
+
+# 本地编辑器配置
+/.vscode/
+
+# 文档、生成产物与测试
+/docs/
+/dist/
+/tests/

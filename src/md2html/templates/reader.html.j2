@@ -1,0 +1,53 @@
+<!doctype html>
+<!-- md2html-generated -->
+<html lang="{{ config.book.language }}" data-theme="{{ config.render.theme }}">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="description" content="{{ config.book.description }}"><meta name="color-scheme" content="light dark">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src data:; style-src 'unsafe-inline'; script-src 'unsafe-inline'; font-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'; object-src 'none'">
+<title>{{ config.book.title }}</title>
+<style>{{ css|safe }}{{ print_css|safe }}</style>
+</head>
+<body>
+<a class="skip-link" href="#main">跳到正文</a>
+<header class="topbar">
+  <a class="brand" href="#book-cover" aria-label="返回教材首页"><svg viewBox="0 0 32 32" width="30" height="30" aria-hidden="true"><path d="M4 5h10l2 3 2-3h10v22H18l-2 2-2-2H4z" fill="none" stroke="currentColor" stroke-width="2"/><path d="M16 9v16M8 11h4m-4 5h4m8-5h4m-4 5h4" stroke="currentColor" stroke-width="2"/></svg><span>MD2HTML<span class="brand-caption">离线知识书</span></span></a>
+  {% if config.render.search %}<button class="search-trigger" id="search-open"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/></svg><span>搜索教材内容</span><kbd>Ctrl K</kbd></button>{% endif %}
+  <div class="tools"><button class="tool" id="theme-toggle" aria-label="切换主题" title="切换主题"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M20 15.5A8.5 8.5 0 0 1 8.5 4a8.5 8.5 0 1 0 11.5 11.5Z"/></svg></button><button class="tool menu" id="menu" aria-label="打开目录" aria-expanded="false" aria-controls="sidebar"><svg width="20" height="20" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg></button></div>
+</header>
+{% macro tree(items) %}<ul>{% for item in items %}<li>{% if item.folder is defined %}<details open class="folder"><summary><svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true"><path d="m5 3 5 5-5 5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>{{ item.title }}</summary>{{ tree(item.children) }}</details>{% else %}<details class="toc-document" open><summary><a href="#{{ item.id }}" class="toc-chapter">{{ item.title }}</a>{% if item.children %}<span class="toc-chevron" aria-hidden="true">⌄</span>{% endif %}</summary>{% if item.children %}<ul class="toc-headings">{% for h in item.children %}<li style="--level:{{ h.level }}"><a href="#{{ h.id }}">{{ h.title }}</a></li>{% endfor %}</ul>{% endif %}</details>{% endif %}</li>{% endfor %}</ul>{% endmacro %}
+<button id="sidebar-backdrop" class="sidebar-backdrop" aria-label="关闭目录" hidden></button>
+<aside id="sidebar" aria-label="教材导航">
+  <div class="sidebar-heading"><span>本书目录</span><span class="chapter-count">{{ docs|length }} 章</span></div>
+  <nav>{{ tree(toc) }}</nav>
+  <div class="sidebar-bottom"><span class="offline-dot" aria-hidden="true"></span>单文件完整收录<span class="sidebar-tip">无需网络，也无需服务器</span></div>
+</aside>
+<main id="main">
+  <div class="reading-line"><span>教材 / <span id="current-chapter">阅读起点</span></span><span id="progress-label">0%</span></div><div class="progress-track"><div id="progress"></div></div>
+  <section id="book-cover" class="book-cover">
+    <span class="book-label">你的知识，随身携带</span>
+    <h1>{{ config.book.title }}</h1>
+    <p class="book-description">{{ config.book.description or '从概念到实践，将分散的笔记连成一条清晰的学习路线。' }}</p>
+    <div class="book-facts"><span>{{ docs|length }} 个章节</span><span>目录与全文检索</span><span>完全离线阅读</span></div>
+    <a class="start-reading" href="#{{ docs[0].id }}">开始阅读 <span aria-hidden="true">↓</span></a>
+  </section>
+  {% for doc in docs %}<section class="chapter" id="{{ doc.id }}" aria-label="{{ doc.title }}">
+    <div class="chapter-meta"><span class="chapter-number">{{ '%02d'|format(loop.index) }}</span><span>{{ doc.rel }}</span></div>
+    {% if not doc.headings or doc.headings[0].level != 1 or doc.headings[0].title != doc.title %}<h2 class="chapter-title">{{ doc.title }}</h2>{% endif %}
+    {{ doc.html|safe }}
+    <footer class="chapter-pagination">{% if not loop.first %}<a class="previous" href="#{{ docs[loop.index0-1].id }}"><span>上一章</span><strong>{{ docs[loop.index0-1].title }}</strong></a>{% endif %}{% if not loop.last %}<a class="next" href="#{{ docs[loop.index0+1].id }}"><span>下一章</span><strong>{{ docs[loop.index0+1].title }}</strong></a>{% endif %}</footer>
+  </section>{% endfor %}
+  {% if attachments %}<section id="book-attachments" class="attachments" aria-label="本地附件"><h2>本地附件</h2><p>以下资源已完整收录，无需源文件或网络。</p>
+  {% for item in attachments %}<section class="attachment attachment-{{ item.kind }}" id="{{ item.id }}" aria-label="{{ item.name }}"><h3>{{ item.name }}</h3><p class="attachment-path">{{ item.path }}</p>
+  {% if item.kind == "image" %}<figure><img src="{{ item.uri }}" alt="{{ item.name }}"><figcaption>{{ item.name }}</figcaption></figure>
+  {% else %}<details class="attachment-content"><summary>查看 JSON 内容</summary><pre><code class="json">{{ item.text }}</code></pre></details><a class="attachment-download" href="{{ item.uri }}" download="{{ item.name }}">下载原始 JSON</a>{% endif %}
+  </section>{% endfor %}</section>{% endif %}
+  <footer class="book-footer"><p>由 MD2HTML 打包。内容来自原始 Markdown 与本地附件。</p><details class="licenses"><summary>第三方资源许可</summary><p>公式由 KaTeX 构建时渲染，KaTeX 与所附字体采用 MIT 许可。</p><pre>{{ license }}</pre></details></footer>
+</main>
+{% if config.render.search %}<dialog id="search-dialog" aria-labelledby="search-title"><div class="search-dialog-header"><h2 id="search-title">搜索这本教材</h2><button class="tool" id="search-close" aria-label="关闭搜索">✕</button></div><label class="search-input-wrap"><svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true"><circle cx="10" cy="10" r="6"/><path d="m15 15 5 5"/></svg><input id="search-input" type="search" placeholder="输入关键词，例如：差分信号" autocomplete="off" aria-describedby="search-status"></label><p id="search-status" role="status">输入中文或英文关键词，直接搜索全文。</p><ol id="search-results" aria-label="搜索结果"></ol><div class="search-help">Enter 跳到第一条结果 <span>Esc 关闭</span></div></dialog>{% endif %}
+<dialog id="image-dialog" aria-label="图片预览"><button id="image-close" class="tool" aria-label="关闭图片预览">✕</button><img id="lightbox-image" alt=""><p id="lightbox-caption"></p></dialog>
+<div id="toast" role="status" aria-live="polite"></div>
+<noscript><p class="noscript">JavaScript 已禁用：正文、图片、公式和目录链接仍可阅读，搜索等交互不可用。</p></noscript>
+<script type="application/json" id="md2html-index">{{ index_json|safe }}</script>
+<script>{{ js|safe }}</script>
+</body></html>

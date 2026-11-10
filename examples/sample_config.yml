@@ -1,0 +1,12 @@
+version: 1
+book:
+  title: "CAN 与控制学习手册"
+  language: "zh-CN"
+  description: "从差分信号到闭环控制。把基础概念、工程笔记和数学推导，装进一本可以随身携带的离线教材。"
+content:
+  order:
+    - "00_知识总纲.md"
+    - "第一阶段/第2课_基础.md"
+    - "第一阶段/第10课_报文.md"
+render:
+  toc_depth: 4

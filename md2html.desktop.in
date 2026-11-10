@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=MD2HTML 离线 HTML 生成器
+GenericName=Markdown to Offline HTML
+Comment=把笔记或 AI 分享内容整理为一个单文件离线 HTML
+Exec=@EXEC@
+TryExec=@TRY_EXEC@
+Path=@PROJECT_ROOT@
+Icon=text-html
+Terminal=false
+Categories=Utility;TextTools;
+StartupNotify=true
