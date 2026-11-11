@@ -184,6 +184,12 @@
                   <option value="custom" disabled hidden>自定义排序</option>
                 </select>
               </div>
+              <div class="chatgpt-toolbar" id="chatgpt-toolbar" style="display: none;">
+                <button type="button" class="btn btn-sm btn-light" id="btn-chat-select-all" title="全选所有消息">全选</button>
+                <button type="button" class="btn btn-sm btn-light" id="btn-chat-deselect-all" title="取消全选">全不选</button>
+                <button type="button" class="btn btn-sm btn-light" id="btn-chat-select-ai" title="仅保留 AI 助手的回答">仅选 AI 回答</button>
+                <button type="button" class="btn btn-sm btn-light" id="btn-chat-save-markdown" title="将已选和已修改内容另存为 Markdown 文件">另存 Markdown</button>
+              </div>
               <button type="button" class="btn btn-sm btn-light" id="btn-rescan">重新扫描</button>
             </div>
           </div>
@@ -234,6 +240,7 @@
         <!-- Idle Actions -->
         <div class="action-group" id="actions-idle">
           <button type="button" class="btn btn-secondary btn-lg" id="btn-check-content">检查内容</button>
+          <button type="button" class="btn btn-secondary btn-lg" id="btn-preview-content">预览 HTML</button>
           <button type="button" class="btn btn-primary btn-lg" id="btn-build">生成 HTML</button>
         </div>
 
@@ -263,6 +270,66 @@
         </div>
         <div class="modal-footer">
           <button type="button" class="btn btn-secondary" id="btn-modal-ok">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Message View / Edit Modal -->
+    <div class="modal-backdrop" id="modal-msg-editor" style="display: none;">
+      <div class="modal-window editor-modal-window">
+        <div class="modal-header">
+          <div class="editor-header-left">
+            <h3 class="modal-title" id="editor-modal-title">查看 / 编辑消息</h3>
+            <span class="editor-sync-badge" id="editor-preview-status">预览已同步</span>
+          </div>
+          <button type="button" class="modal-close" id="btn-close-editor">&times;</button>
+        </div>
+        <div class="modal-body editor-modal-body">
+          <div class="editor-split-container">
+            <div class="editor-pane-left">
+              <div class="pane-header">
+                <span class="pane-title">Markdown 原文</span>
+                <span class="pane-meta" id="editor-char-count">0 字符</span>
+              </div>
+              <textarea id="editor-textarea" class="editor-textarea" placeholder="在此编辑 Markdown 内容..."></textarea>
+            </div>
+            <div class="editor-pane-right">
+              <div class="pane-header">
+                <span class="pane-title">排版预览 (Pandoc + KaTeX)</span>
+                <span class="pane-meta">与最终输出完全一致</span>
+              </div>
+              <div class="editor-preview-frame-wrap">
+                <iframe id="editor-preview-iframe" class="preview-iframe" title="消息排版预览"></iframe>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="modal-footer editor-modal-footer">
+          <div class="footer-left">
+            <button type="button" class="btn btn-outline" id="btn-editor-restore">恢复原文</button>
+          </div>
+          <div class="footer-right">
+            <button type="button" class="btn btn-secondary" id="btn-editor-cancel">取消</button>
+            <button type="button" class="btn btn-primary" id="btn-editor-apply">应用修改</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Content Preview Modal -->
+    <div class="modal-backdrop" id="modal-merged-preview" style="display: none;">
+      <div class="modal-window merged-preview-modal-window">
+        <div class="modal-header">
+          <h3 class="modal-title" id="merged-preview-title">预览 HTML 内容</h3>
+          <button type="button" class="modal-close" id="btn-close-merged-preview">&times;</button>
+        </div>
+        <div class="modal-body merged-preview-modal-body">
+          <iframe id="merged-preview-iframe" class="preview-iframe" title="HTML 内容预览"></iframe>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" id="btn-merged-save-md">另存 Markdown</button>
+          <button type="button" class="btn btn-secondary" id="btn-merged-close">关闭</button>
+          <button type="button" class="btn btn-primary" id="btn-merged-build">生成 HTML</button>
         </div>
       </div>
     </div>

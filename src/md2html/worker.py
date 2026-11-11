@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .service import build_service
-from .sources import ChatGPTShareSource, FileSource, FolderSource
+from .sources import ChatMessage, ChatGPTShareSource, FileSource, FolderSource
 
 
 def emit(data: dict[str, Any]) -> None:
@@ -46,7 +46,22 @@ def main() -> int:
             include_files=source_data.get("include_files"),
         )
     elif source_type == "chatgpt":
-        source_spec = ChatGPTShareSource(url=source_data["url"])
+        msgs = None
+        if "messages" in source_data and source_data["messages"] is not None:
+            msgs = [
+                ChatMessage(
+                    id=m.get("id", f"msg-{i}"),
+                    role=m.get("role", "unknown"),
+                    text=m.get("text", ""),
+                    author_name=m.get("author_name"),
+                )
+                for i, m in enumerate(source_data["messages"])
+            ]
+        source_spec = ChatGPTShareSource(
+            url=source_data.get("url", ""),
+            messages=msgs,
+            title=source_data.get("title"),
+        )
     else:
         emit({"event": "error", "job_id": job_id, "message": f"未知来源类型: {source_type}"})
         return 1

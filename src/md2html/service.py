@@ -8,12 +8,16 @@ from pathlib import Path
 from typing import Any, Callable
 
 from . import math_renderer, pandoc_bridge
+from .anchors import assign, collect_explicit
 from .config import load_config
 from .html_builder import build
-from .models import BuildError, Report
+from .models import BuildError, Document, Report
+from .obsidian import callouts
 from .output_policy import protect_target, safe_staging_path
+from .safety import prepare, sanitize
 from .sources import (
     BuildResult,
+    ChatMessage,
     ChatGPTShareSource,
     FileSource,
     FolderSource,
@@ -24,6 +28,9 @@ from .sources import (
     prepare_file_source,
     prepare_folder_source,
 )
+from .sources.normalize import format_messages_text, messages_to_markdown
+
+TEMPLATES = Path(__file__).parent / "templates"
 
 
 def check_runtime() -> dict[str, Any]:
@@ -204,8 +211,10 @@ def inspect_source(
                 "id": m["id"],
                 "role": m["role"],
                 "name": f"消息 {i+1} · {m['role']}",
+                "author_name": m.get("author_name"),
                 "snippet": m["snippet"],
                 "chars": m["chars"],
+                "text": m.get("text", ""),
             }
             for i, m in enumerate(info["messages"])
         ]
@@ -229,6 +238,124 @@ def inspect_source(
         }
     else:
         raise BuildError(f"未知来源类型: {type(source)}")
+
+
+def render_markdown_preview_service(markdown: str) -> dict[str, Any]:
+    """Render markdown with Pandoc, KaTeX, and safety rules for GUI preview."""
+    try:
+        report = Report()
+        doc = Document(
+            path=Path("preview.md"),
+            rel="preview.md",
+            text=markdown,
+            metadata={},
+            title="预览",
+        )
+        doc.ast = pandoc_bridge.parse(doc.text)
+        explicit = collect_explicit(doc.ast)
+        prepare(doc.ast, report, doc.rel)
+        assign(doc, explicit)
+        callouts(doc.ast, report, doc.rel)
+        math_replacements = math_renderer.render_math([doc], report)
+        body_html = sanitize(pandoc_bridge.render(doc.ast, True), "preview")
+        for token, markup in math_replacements.items():
+            body_html = body_html.replace(token, markup)
+
+        reader_css = (TEMPLATES / "reader.css").read_text(encoding="utf-8")
+        katex_css = math_renderer.css()
+
+        full_html = (
+            "<!DOCTYPE html>\n<html>\n<head>\n<meta charset=\"utf-8\">\n"
+            "<style>\n"
+            f"{reader_css}\n"
+            f"{katex_css}\n"
+            "body { padding: 24px 32px; background: var(--paper, #faf9f5); color: var(--ink, #26382f); font-family: system-ui, -apple-system, sans-serif; line-height: 1.8; }\n"
+            ".preview-container { max-width: 900px; margin: 0 auto; }\n"
+            "</style>\n</head>\n<body class=\"chapter\">\n"
+            f"<div class=\"preview-container\">{body_html}</div>\n"
+            "</body>\n</html>"
+        )
+        return {
+            "success": True,
+            "html": body_html,
+            "full_html": full_html,
+            "issues": [i.__dict__ for i in report.issues],
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def preview_source_service(
+    source: SourceSpec,
+    config_path: Path | None = None,
+    overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Generate in-memory full HTML preview for any source type without writing to disk."""
+    report = Report()
+    try:
+        if isinstance(source, FileSource):
+            root = source.resource_root or Path(source.path).parent
+        elif isinstance(source, FolderSource):
+            root = source.root
+        else:
+            root = Path.cwd()
+
+        config = load_config(root, config_path, overrides)
+        prepared = prepare_source(source, config, report)
+        if not prepared.documents:
+            return {"success": False, "error": "没有可供预览的文档内容"}
+
+        html, _ = build(
+            prepared.root,
+            config,
+            report,
+            output=None,
+            documents=prepared.documents,
+        )
+        title = config.get("book", {}).get("title") or (prepared.documents[0].title if prepared.documents else "预览")
+        return {
+            "success": True,
+            "full_html": html,
+            "title": title,
+            "issues": [i.__dict__ for i in report.issues],
+        }
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+def preview_chat_messages_service(title: str, messages: list[ChatMessage]) -> dict[str, Any]:
+    """Format chat messages into unified markdown and render full HTML preview."""
+    if not messages:
+        return {"success": False, "error": "没有选中的消息可供预览"}
+    combined_md = format_messages_text(messages, title)
+    return render_markdown_preview_service(combined_md)
+
+
+def save_markdown_service(
+    target_path: Path,
+    title: str,
+    messages: list[ChatMessage],
+) -> dict[str, Any]:
+    """Save chat messages as markdown and download companion images into images/ directory."""
+    if not messages:
+        return {"success": False, "error": "没有选中的消息可供保存"}
+    report = Report()
+    target_path = Path(target_path).resolve()
+    target_dir = target_path.parent
+    target_dir.mkdir(parents=True, exist_ok=True)
+    doc, md_path = messages_to_markdown(
+        messages=messages,
+        title=title,
+        target_dir=target_dir,
+        report=report,
+        filename=target_path.name,
+    )
+    return {
+        "success": True,
+        "path": str(md_path),
+        "size": md_path.stat().st_size,
+        "issues": [i.__dict__ for i in report.issues],
+    }
 
 
 def prepare_source(

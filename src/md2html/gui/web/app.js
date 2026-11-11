@@ -6,25 +6,30 @@ let pollTimer = null;
 let lastInspectData = null;
 let lastReport = null;
 
+// Per-mode settings state so title & output don't leak across tabs
+const modeSettings = {
+  folder: { title: "", output: "", inspectData: null },
+  file: { title: "", output: "", inspectData: null },
+  chatgpt: { title: "", output: "", inspectData: null },
+};
+
 // Dynamic catalog state for reordering & inclusion selection
 let rawFiles = []; // [{ rel, name, title, size, mtime, parentParts }]
 let fileOrder = []; // array of rel strings in current order
 let isMergedMap = {}; // rel -> boolean (true: merge, false: skip)
 let folderCollapsedMap = {}; // folderKey -> boolean
 
-// Wait for pywebviewready
-function init() {
-  setupTabs();
-  setupEventListeners();
-  checkEnvironment();
-  loadInitialSettings();
-}
-
-if (window.pywebview) {
-  init();
-} else {
-  window.addEventListener("pywebviewready", init);
-}
+// ChatGPT share link session editing draft state
+let chatgptSession = null;
+// {
+//   url: string,
+//   title: string,
+//   messages: [
+//     { id, role, author_name, original_text, text, selected, modified }
+//   ]
+// }
+let currentEditingMsgId = null;
+let editorDebounceTimer = null;
 
 // Fallback mock if opened in standalone browser for previewing layout
 const api = {
@@ -32,7 +37,7 @@ const api = {
     return window.pywebview ? await window.pywebview.api.check_environment() : { status: "ready", gui_backend: "Mock Preview", risks: [] };
   },
   async load_settings() {
-    return window.pywebview ? await window.pywebview.api.load_settings() : { last_folder: "/示例/控制理论笔记/", theme: "auto", toc_depth: 3, search: true };
+    return window.pywebview ? await window.pywebview.api.load_settings() : { theme: "auto", toc_depth: 3, search: true };
   },
   async save_settings(settings) {
     if (window.pywebview) await window.pywebview.api.save_settings(settings);
@@ -45,6 +50,22 @@ const api = {
   },
   async choose_save_file(title, defName, defDir) {
     return window.pywebview ? await window.pywebview.api.choose_save_file(title, defName, defDir) : null;
+  },
+  async choose_save_markdown_file(title, defName, defDir) {
+    return window.pywebview ? await window.pywebview.api.choose_save_markdown_file(title, defName, defDir) : null;
+  },
+  async render_markdown_preview(markdown) {
+    return window.pywebview ? await window.pywebview.api.render_markdown_preview(markdown) : {
+      success: true,
+      html: `<div>${escapeHtml(markdown)}</div>`,
+      full_html: `<!DOCTYPE html><html><body style="font-family:system-ui;padding:20px;line-height:1.7;"><div>${escapeHtml(markdown)}</div></body></html>`
+    };
+  },
+  async preview_chat_messages(title, msgs) {
+    return window.pywebview ? await window.pywebview.api.preview_chat_messages(title, msgs) : { success: false, error: "Native API not available" };
+  },
+  async save_markdown(targetPath, title, msgs) {
+    return window.pywebview ? await window.pywebview.api.save_markdown(targetPath, title, msgs) : { success: false, error: "Native API not available" };
   },
   async inspect(type, path, opts) {
     return window.pywebview ? await window.pywebview.api.inspect(type, path, opts) : { success: false, error: "Native API not available in browser preview" };
@@ -66,11 +87,46 @@ const api = {
   }
 };
 
+// Wait for pywebviewready
+function init() {
+  setupTabs();
+  setupEventListeners();
+  checkEnvironment();
+  loadInitialSettings();
+}
+
+if (window.pywebview) {
+  init();
+} else {
+  window.addEventListener("pywebviewready", init);
+}
+
+// Check if ChatGPT session has unsaved modifications or filtered selection
+function hasUnsavedChatChanges() {
+  if (!chatgptSession || !chatgptSession.messages || chatgptSession.messages.length === 0) return false;
+  const anyModified = chatgptSession.messages.some(m => m.modified);
+  const anyUnselected = chatgptSession.messages.some(m => !m.selected);
+  return anyModified || anyUnselected;
+}
+
 // Tabs
 function setupTabs() {
   const tabs = document.querySelectorAll(".segment-btn");
   tabs.forEach(tab => {
     tab.addEventListener("click", () => {
+      if (tab.dataset.mode === currentMode) return;
+
+      if (currentMode === "chatgpt" && tab.dataset.mode !== "chatgpt" && hasUnsavedChatChanges()) {
+        const confirmSwitch = confirm("当前分享内容已有修改或筛选尚未另存为 Markdown。切换来源将放弃这些修改。\n\n是否继续切换？（如需保留，请先取消并点击“另存 Markdown”）");
+        if (!confirmSwitch) return;
+      }
+
+      // Preserve current mode's doc-title and output-path before switching
+      if (modeSettings[currentMode]) {
+        modeSettings[currentMode].title = document.getElementById("doc-title").value;
+        modeSettings[currentMode].output = document.getElementById("output-path").value;
+      }
+
       tabs.forEach(t => t.classList.remove("active"));
       tab.classList.add("active");
       currentMode = tab.dataset.mode;
@@ -78,29 +134,35 @@ function setupTabs() {
       document.querySelectorAll(".tab-pane").forEach(p => p.classList.remove("active"));
       document.getElementById(`pane-${currentMode}`).classList.add("active");
 
-      // Update right preview header and sort controls
+      // Update right preview header, toolbar and sort controls
       const previewTitle = document.querySelector(".preview-title");
       const sortControls = document.getElementById("sort-controls");
       const sortTip = document.getElementById("sort-tip");
+      const chatgptToolbar = document.getElementById("chatgpt-toolbar");
 
       if (currentMode === "chatgpt") {
         previewTitle.textContent = "分享消息列表";
         document.getElementById("tree-footer-note").textContent = "提取的消息将按顺序合并整理为一个离线 HTML。";
         sortControls.style.display = "none";
         sortTip.style.display = "none";
-        document.getElementById("doc-title").value = "";
-        document.getElementById("output-path").value = "";
+        if (chatgptToolbar) chatgptToolbar.style.display = "flex";
       } else if (currentMode === "file") {
         previewTitle.textContent = "单文件信息";
         document.getElementById("tree-footer-note").textContent = "只收录该 Markdown 及其引用的资源。";
         sortControls.style.display = "none";
         sortTip.style.display = "none";
+        if (chatgptToolbar) chatgptToolbar.style.display = "none";
       } else {
         previewTitle.textContent = "内容目录";
         document.getElementById("tree-footer-note").textContent = "图片将随 HTML 保存；目录中的顺序即输出顺序。";
         sortControls.style.display = "flex";
         sortTip.style.display = "inline";
+        if (chatgptToolbar) chatgptToolbar.style.display = "none";
       }
+
+      // Switch generation settings to active mode's stored content
+      document.getElementById("doc-title").value = modeSettings[currentMode]?.title || "";
+      document.getElementById("output-path").value = modeSettings[currentMode]?.output || "";
 
       setActionState("idle");
       triggerInspect();
@@ -116,12 +178,22 @@ function setupEventListeners() {
     const folder = await api.choose_folder("选择笔记文件夹", cur);
     if (folder) {
       document.getElementById("folder-path").value = folder;
+      if (modeSettings.folder) {
+        modeSettings.folder.title = "";
+        modeSettings.folder.output = "";
+        modeSettings.folder.inspectData = null;
+      }
       setActionState("idle");
       triggerInspect();
     }
   });
 
   document.getElementById("folder-path").addEventListener("change", () => {
+    if (modeSettings.folder) {
+      modeSettings.folder.title = "";
+      modeSettings.folder.output = "";
+      modeSettings.folder.inspectData = null;
+    }
     setActionState("idle");
     triggerInspect();
   });
@@ -132,12 +204,22 @@ function setupEventListeners() {
     const file = await api.choose_file("选择 Markdown 文件", cur);
     if (file) {
       document.getElementById("file-path").value = file;
+      if (modeSettings.file) {
+        modeSettings.file.title = "";
+        modeSettings.file.output = "";
+        modeSettings.file.inspectData = null;
+      }
       setActionState("idle");
       triggerInspect();
     }
   });
 
   document.getElementById("file-path").addEventListener("change", () => {
+    if (modeSettings.file) {
+      modeSettings.file.title = "";
+      modeSettings.file.output = "";
+      modeSettings.file.inspectData = null;
+    }
     setActionState("idle");
     triggerInspect();
   });
@@ -165,13 +247,77 @@ function setupEventListeners() {
     const saved = await api.choose_save_file("另存为 HTML", defName, defDir);
     if (saved) {
       document.getElementById("output-path").value = saved;
+      if (modeSettings[currentMode]) {
+        modeSettings[currentMode].output = saved;
+      }
     }
   });
 
   // ChatGPT Fetch
   document.getElementById("btn-fetch-chatgpt").addEventListener("click", () => {
+    if (modeSettings.chatgpt) {
+      modeSettings.chatgpt.title = "";
+      modeSettings.chatgpt.output = "";
+      modeSettings.chatgpt.inspectData = null;
+    }
     triggerInspect();
   });
+
+  // Keep modeSettings in sync when user edits doc-title or output-path
+  document.getElementById("doc-title").addEventListener("input", (e) => {
+    if (modeSettings[currentMode]) {
+      modeSettings[currentMode].title = e.target.value;
+    }
+  });
+  document.getElementById("output-path").addEventListener("input", (e) => {
+    if (modeSettings[currentMode]) {
+      modeSettings[currentMode].output = e.target.value;
+    }
+  });
+
+  // ChatGPT Toolbar buttons
+  const btnChatSelectAll = document.getElementById("btn-chat-select-all");
+  if (btnChatSelectAll) {
+    btnChatSelectAll.addEventListener("click", () => {
+      if (!chatgptSession) return;
+      chatgptSession.messages.forEach(m => m.selected = true);
+      renderCatalogTree();
+    });
+  }
+
+  const btnChatDeselectAll = document.getElementById("btn-chat-deselect-all");
+  if (btnChatDeselectAll) {
+    btnChatDeselectAll.addEventListener("click", () => {
+      if (!chatgptSession) return;
+      chatgptSession.messages.forEach(m => m.selected = false);
+      renderCatalogTree();
+    });
+  }
+
+  const btnChatSelectAi = document.getElementById("btn-chat-select-ai");
+  if (btnChatSelectAi) {
+    btnChatSelectAi.addEventListener("click", () => {
+      if (!chatgptSession) return;
+      chatgptSession.messages.forEach(m => {
+        m.selected = (m.role === "assistant");
+      });
+      renderCatalogTree();
+    });
+  }
+
+  const btnChatPreviewMerged = document.getElementById("btn-chat-preview-merged");
+  if (btnChatPreviewMerged) {
+    btnChatPreviewMerged.addEventListener("click", () => {
+      handlePreviewMerged();
+    });
+  }
+
+  const btnChatSaveMd = document.getElementById("btn-chat-save-markdown");
+  if (btnChatSaveMd) {
+    btnChatSaveMd.addEventListener("click", () => {
+      handleSaveMarkdown();
+    });
+  }
 
   // Rescan
   document.getElementById("btn-rescan").addEventListener("click", () => {
@@ -183,6 +329,14 @@ function setupEventListeners() {
   const colMergeHeader = document.getElementById("col-header-merge");
   if (colMergeHeader) {
     colMergeHeader.addEventListener("click", () => {
+      if (currentMode === "chatgpt") {
+        if (!chatgptSession || chatgptSession.messages.length === 0) return;
+        const anySelected = chatgptSession.messages.some(m => m.selected);
+        const nextVal = !anySelected;
+        chatgptSession.messages.forEach(m => m.selected = nextVal);
+        renderCatalogTree();
+        return;
+      }
       if (rawFiles.length === 0) return;
       const anyMerged = rawFiles.some(f => isMergedMap[f.rel] !== false);
       const nextVal = !anyMerged; // if some/all are merged, deselect all; if none merged, select all
@@ -249,9 +403,37 @@ function setupEventListeners() {
     showDiagnosticsModal();
   });
 
-  // Modal close
+  // Diagnostic Modal close
   document.getElementById("btn-close-modal").addEventListener("click", closeModal);
   document.getElementById("btn-modal-ok").addEventListener("click", closeModal);
+
+  // Message Editor Modal listeners
+  const btnCloseEditor = document.getElementById("btn-close-editor");
+  if (btnCloseEditor) btnCloseEditor.addEventListener("click", closeMessageEditor);
+  const btnEditorCancel = document.getElementById("btn-editor-cancel");
+  if (btnEditorCancel) btnEditorCancel.addEventListener("click", closeMessageEditor);
+  const btnEditorRestore = document.getElementById("btn-editor-restore");
+  if (btnEditorRestore) btnEditorRestore.addEventListener("click", handleEditorRestore);
+  const btnEditorApply = document.getElementById("btn-editor-apply");
+  if (btnEditorApply) btnEditorApply.addEventListener("click", handleEditorApply);
+  const editorTextarea = document.getElementById("editor-textarea");
+  if (editorTextarea) editorTextarea.addEventListener("input", handleEditorInput);
+
+  // Merged Preview Modal listeners
+  const btnCloseMerged = document.getElementById("btn-close-merged-preview");
+  if (btnCloseMerged) btnCloseMerged.addEventListener("click", closeMergedPreview);
+  const btnMergedClose = document.getElementById("btn-merged-close");
+  if (btnMergedClose) btnMergedClose.addEventListener("click", closeMergedPreview);
+  const btnMergedSave = document.getElementById("btn-merged-save-md");
+  if (btnMergedSave) btnMergedSave.addEventListener("click", () => {
+    closeMergedPreview();
+    handleSaveMarkdown();
+  });
+  const btnMergedBuild = document.getElementById("btn-merged-build");
+  if (btnMergedBuild) btnMergedBuild.addEventListener("click", () => {
+    closeMergedPreview();
+    handleStartBuild();
+  });
 }
 
 // Environment Check
@@ -281,10 +463,6 @@ async function checkEnvironment() {
 async function loadInitialSettings() {
   try {
     const s = await api.load_settings();
-    if (s.last_folder && s.last_folder !== "/") {
-      document.getElementById("folder-path").value = s.last_folder;
-      triggerInspect();
-    }
     const themeSelect = document.getElementById("theme-select");
     if (themeSelect && s.theme) themeSelect.value = s.theme;
     if (s.toc_depth) document.getElementById("toc-depth-select").value = s.toc_depth;
@@ -339,7 +517,19 @@ function getRequestParameters() {
     };
   } else if (currentMode === "chatgpt") {
     sourcePathOrUrl = document.getElementById("chatgpt-url").value.trim();
-    sourceData = { url: sourcePathOrUrl };
+    const selectedMsgs = (chatgptSession && chatgptSession.messages)
+      ? chatgptSession.messages.filter(m => m.selected)
+      : [];
+    sourceData = {
+      url: sourcePathOrUrl,
+      title: document.getElementById("doc-title").value.trim() || (chatgptSession ? chatgptSession.title : ""),
+      messages: selectedMsgs.map(m => ({
+        id: m.id,
+        role: m.role,
+        author_name: m.author_name,
+        text: m.text,
+      })),
+    };
   }
 
   const output = document.getElementById("output-path").value.trim();
@@ -382,6 +572,14 @@ async function triggerInspect() {
     return;
   }
 
+  if (req.source_type === "chatgpt" && hasUnsavedChatChanges()) {
+    const confirmReinspect = confirm("当前分享内容已有修改或筛选尚未另存为 Markdown。重新读取将放弃这些修改。\n\n是否继续重新读取？（如需保留，请先取消并点击“另存 Markdown”）");
+    if (!confirmReinspect) {
+      setActionState("idle");
+      return;
+    }
+  }
+
   updateStatus("reading", "正在读取来源内容...");
   const treeContainer = document.getElementById("tree-container");
   treeContainer.innerHTML = `<div class="empty-state"><p>正在扫描并解析来源...</p></div>`;
@@ -396,8 +594,13 @@ async function triggerInspect() {
     if (!res.success) {
       setActionState("idle");
       updateStatus("error", `读取失败: ${res.error}`);
-      treeContainer.innerHTML = `<div class="empty-state" style="color:var(--danger-color)"><p>⚠️ ${escapeHtml(res.error)}</p></div>`;
-      document.getElementById("summary-meta").textContent = "扫描遇到错误";
+      if (req.source_type === "chatgpt" && chatgptSession && chatgptSession.messages && chatgptSession.messages.length > 0) {
+        renderCatalogTree();
+        alert(`读取新内容失败: ${res.error}\n已保留当前编辑稿。`);
+      } else {
+        treeContainer.innerHTML = `<div class="empty-state" style="color:var(--danger-color)"><p>⚠️ ${escapeHtml(res.error)}</p></div>`;
+        document.getElementById("summary-meta").textContent = "扫描遇到错误";
+      }
       return;
     }
 
@@ -412,6 +615,20 @@ async function triggerInspect() {
         isMergedMap[f.rel] = true;
       });
       document.getElementById("sort-select").value = "default";
+    } else if (res.data.type === "chatgpt") {
+      chatgptSession = {
+        url: res.data.url,
+        title: res.data.title || "ChatGPT 分享内容",
+        messages: (res.data.tree || []).map((m, idx) => ({
+          id: m.id || `msg-${idx + 1}`,
+          role: m.role || "unknown",
+          author_name: m.author_name || null,
+          original_text: m.text || "",
+          text: m.text || "",
+          selected: true,
+          modified: false,
+        })),
+      };
     }
 
     renderInspectResult(res.data);
@@ -517,11 +734,25 @@ function renderInspectResult(data) {
   const outputInput = document.getElementById("output-path");
 
   if (data.type === "chatgpt") {
-    titleInput.value = "";
-    outputInput.value = "";
+    const defaultTitle = data.title || "ChatGPT 分享内容";
+    const safeName = defaultTitle.replace(/[\\/*?:"<>|]/g, "_").trim() || "chatgpt";
+    const defaultOutput = `${safeName}.html`;
+
+    titleInput.value = modeSettings.chatgpt?.title || defaultTitle;
+    outputInput.value = modeSettings.chatgpt?.output || defaultOutput;
+    if (modeSettings.chatgpt) {
+      modeSettings.chatgpt.title = titleInput.value;
+      modeSettings.chatgpt.output = outputInput.value;
+      modeSettings.chatgpt.inspectData = data;
+    }
   } else {
-    titleInput.value = data.title || "";
-    outputInput.value = data.suggested_output || "";
+    titleInput.value = modeSettings[data.type]?.title || data.title || "";
+    outputInput.value = modeSettings[data.type]?.output || data.suggested_output || "";
+    if (modeSettings[data.type]) {
+      modeSettings[data.type].title = titleInput.value;
+      modeSettings[data.type].output = outputInput.value;
+      modeSettings[data.type].inspectData = data;
+    }
   }
 
   renderCatalogTree();
@@ -537,27 +768,93 @@ function renderCatalogTree() {
   treeContainer.innerHTML = "";
 
   if (data.type === "chatgpt") {
-    const stats = data.stats;
-    metaEl.textContent = `已读取 ${stats.message_count} 条消息 (${stats.assistant_count} 条AI回答, ${stats.user_count} 条提问) · 约 ${stats.total_chars.toLocaleString()} 字符`;
+    if (!chatgptSession) {
+      chatgptSession = {
+        url: data.url || "",
+        title: data.title || "ChatGPT 分享内容",
+        messages: (data.tree || []).map((m, idx) => ({
+          id: m.id || `msg-${idx + 1}`,
+          role: m.role || "unknown",
+          author_name: m.author_name || null,
+          original_text: m.text || "",
+          text: m.text || "",
+          selected: true,
+          modified: false,
+        })),
+      };
+    }
 
-    // Render message list
-    data.tree.forEach((m, idx) => {
-      const node = document.createElement("div");
-      node.className = "tree-node";
-      node.style.padding = "6px 8px";
-      node.style.borderBottom = "1px solid #f1f5f9";
-      node.innerHTML = `
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
-          <span style="font-weight:600; color:${m.role === 'assistant' ? '#2563eb' : '#059669'};">
-            ${escapeHtml(m.name)}
-          </span>
-          <span style="font-size:11px; color:#94a3b8;">${m.chars} 字符</span>
+    const messages = chatgptSession.messages;
+    const total = messages.length;
+    const selectedList = messages.filter(m => m.selected);
+    const selectedCount = selectedList.length;
+    const assistantCount = messages.filter(m => m.role === "assistant").length;
+    const userCount = messages.filter(m => m.role === "user").length;
+    const totalChars = selectedList.reduce((sum, m) => sum + m.text.length, 0);
+
+    metaEl.innerHTML = `共 <strong>${total}</strong> 条消息 (${assistantCount} 条AI回答, ${userCount} 条提问) · 已选 <strong style="color:var(--primary-color)">${selectedCount}</strong> 条 · 约 <strong>${totalChars.toLocaleString()}</strong> 字符`;
+
+    // Disable build/check if 0 selected
+    const buildBtn = document.getElementById("btn-build");
+    const checkBtn = document.getElementById("btn-check-content");
+    if (selectedCount === 0) {
+      buildBtn.disabled = true;
+      checkBtn.disabled = true;
+      buildBtn.title = "请至少勾选一条要收录的消息";
+    } else {
+      buildBtn.disabled = false;
+      checkBtn.disabled = false;
+      buildBtn.title = "";
+    }
+
+    if (messages.length === 0) {
+      treeContainer.innerHTML = `<div class="empty-state"><p>未在分享链接中发现任何消息</p></div>`;
+      return;
+    }
+
+    messages.forEach((m, idx) => {
+      const itemEl = document.createElement("div");
+      itemEl.className = `chat-message-item ${m.selected ? 'selected' : ''}`;
+      itemEl.dataset.id = m.id;
+
+      const roleName = m.role === 'assistant' ? 'AI 助手' : (m.role === 'user' ? '用户' : (m.role === 'system' ? '系统' : m.role));
+      const snippet = m.text ? m.text.slice(0, 160).trim() : '（无内容）';
+
+      itemEl.innerHTML = `
+        <div class="chat-message-header">
+          <label class="chat-checkbox-label" title="勾选以收录本条消息">
+            <input type="checkbox" class="chat-msg-checkbox" data-id="${escapeHtml(m.id)}" ${m.selected ? 'checked' : ''}>
+            <span class="role-badge role-${escapeHtml(m.role)}">消息 ${idx + 1} · ${escapeHtml(roleName)}</span>
+            ${m.author_name ? `<span class="author-name">(${escapeHtml(m.author_name)})</span>` : ''}
+            ${m.modified ? `<span class="modified-badge">已修改</span>` : ''}
+          </label>
+          <div class="chat-msg-actions">
+            <span class="chat-msg-chars">${m.text.length.toLocaleString()} 字符</span>
+            <button type="button" class="btn btn-xs btn-outline btn-edit-msg" data-id="${escapeHtml(m.id)}">查看 / 编辑</button>
+          </div>
         </div>
-        <div style="font-size:12px; color:#475569; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
-          ${escapeHtml(m.snippet)}...
-        </div>
+        <div class="chat-message-snippet">${escapeHtml(snippet)}</div>
       `;
-      treeContainer.appendChild(node);
+
+      // Checkbox event
+      const cb = itemEl.querySelector(".chat-msg-checkbox");
+      cb.addEventListener("change", (e) => {
+        m.selected = e.target.checked;
+        if (m.selected) {
+          itemEl.classList.add("selected");
+        } else {
+          itemEl.classList.remove("selected");
+        }
+        updateChatSummaryMeta();
+      });
+
+      // Edit button event
+      const editBtn = itemEl.querySelector(".btn-edit-msg");
+      editBtn.addEventListener("click", () => {
+        openMessageEditor(m.id);
+      });
+
+      treeContainer.appendChild(itemEl);
     });
   } else if (data.type === "file") {
     metaEl.textContent = `单文件 · 1 篇笔记 · 最终输出 1 个 HTML`;
@@ -823,6 +1120,181 @@ function setupUnifiedDragAndDrop(element, itemData) {
   });
 }
 
+// Update ChatGPT summary meta count
+function updateChatSummaryMeta() {
+  if (currentMode !== "chatgpt" || !chatgptSession) return;
+  const messages = chatgptSession.messages;
+  const total = messages.length;
+  const selectedList = messages.filter(m => m.selected);
+  const selectedCount = selectedList.length;
+  const assistantCount = messages.filter(m => m.role === "assistant").length;
+  const userCount = messages.filter(m => m.role === "user").length;
+  const totalChars = selectedList.reduce((sum, m) => sum + m.text.length, 0);
+
+  const metaEl = document.getElementById("summary-meta");
+  metaEl.innerHTML = `共 <strong>${total}</strong> 条消息 (${assistantCount} 条AI回答, ${userCount} 条提问) · 已选 <strong style="color:var(--primary-color)">${selectedCount}</strong> 条 · 约 <strong>${totalChars.toLocaleString()}</strong> 字符`;
+
+  const buildBtn = document.getElementById("btn-build");
+  const checkBtn = document.getElementById("btn-check-content");
+  if (selectedCount === 0) {
+    buildBtn.disabled = true;
+    checkBtn.disabled = true;
+    buildBtn.title = "请至少勾选一条要收录的消息";
+  } else {
+    buildBtn.disabled = false;
+    checkBtn.disabled = false;
+    buildBtn.title = "";
+  }
+}
+
+// Open Message View / Edit Modal
+async function openMessageEditor(msgId) {
+  if (!chatgptSession) return;
+  const msg = chatgptSession.messages.find(m => m.id === msgId);
+  if (!msg) return;
+
+  currentEditingMsgId = msgId;
+  const roleName = msg.role === 'assistant' ? 'AI 助手' : (msg.role === 'user' ? '用户' : (msg.role === 'system' ? '系统' : msg.role));
+  const idx = chatgptSession.messages.indexOf(msg) + 1;
+  document.getElementById("editor-modal-title").textContent = `查看 / 编辑消息 ${idx} · ${roleName}`;
+
+  const textarea = document.getElementById("editor-textarea");
+  textarea.value = msg.text;
+  document.getElementById("editor-char-count").textContent = `${msg.text.length.toLocaleString()} 字符`;
+  document.getElementById("editor-preview-status").textContent = "正在渲染预览...";
+
+  const modal = document.getElementById("modal-msg-editor");
+  modal.style.display = "flex";
+
+  try {
+    const res = await api.render_markdown_preview(msg.text);
+    if (res.success && res.full_html) {
+      document.getElementById("editor-preview-iframe").srcdoc = res.full_html;
+      document.getElementById("editor-preview-status").textContent = "预览已同步";
+    } else {
+      document.getElementById("editor-preview-status").textContent = `渲染异常: ${res.error || "未知错误"}`;
+    }
+  } catch (e) {
+    document.getElementById("editor-preview-status").textContent = `渲染出错: ${e}`;
+  }
+}
+
+// Debounced input handler for message editor
+function handleEditorInput() {
+  const text = document.getElementById("editor-textarea").value;
+  document.getElementById("editor-char-count").textContent = `${text.length.toLocaleString()} 字符`;
+  document.getElementById("editor-preview-status").textContent = "正在渲染预览...";
+
+  clearTimeout(editorDebounceTimer);
+  editorDebounceTimer = setTimeout(async () => {
+    try {
+      const res = await api.render_markdown_preview(text);
+      if (res.success && res.full_html) {
+        document.getElementById("editor-preview-iframe").srcdoc = res.full_html;
+        document.getElementById("editor-preview-status").textContent = "预览已同步";
+      } else {
+        document.getElementById("editor-preview-status").textContent = `渲染异常: ${res.error || "未知错误"}`;
+      }
+    } catch (e) {
+      document.getElementById("editor-preview-status").textContent = `渲染出错: ${e}`;
+    }
+  }, 300);
+}
+
+// Restore original message text
+function handleEditorRestore() {
+  if (!chatgptSession || !currentEditingMsgId) return;
+  const msg = chatgptSession.messages.find(m => m.id === currentEditingMsgId);
+  if (!msg) return;
+  document.getElementById("editor-textarea").value = msg.original_text;
+  handleEditorInput();
+}
+
+// Apply edited message text
+function handleEditorApply() {
+  if (!chatgptSession || !currentEditingMsgId) return;
+  const msg = chatgptSession.messages.find(m => m.id === currentEditingMsgId);
+  if (!msg) return;
+
+  const newText = document.getElementById("editor-textarea").value;
+  msg.text = newText;
+  msg.modified = (msg.text !== msg.original_text);
+
+  closeMessageEditor();
+  renderCatalogTree();
+}
+
+function closeMessageEditor() {
+  clearTimeout(editorDebounceTimer);
+  document.getElementById("modal-msg-editor").style.display = "none";
+  currentEditingMsgId = null;
+}
+
+// Preview Merged Selected Content
+async function handlePreviewMerged() {
+  if (!chatgptSession) return;
+  const selectedMsgs = chatgptSession.messages.filter(m => m.selected);
+  if (selectedMsgs.length === 0) {
+    alert("请至少勾选一条消息进行预览");
+    return;
+  }
+
+  const title = document.getElementById("doc-title").value.trim() || chatgptSession.title || "AI分享内容";
+  document.getElementById("merged-preview-title").textContent = `预览已选内容 (共 ${selectedMsgs.length} 条消息)`;
+
+  const modal = document.getElementById("modal-merged-preview");
+  modal.style.display = "flex";
+  const iframe = document.getElementById("merged-preview-iframe");
+  iframe.srcdoc = `<!DOCTYPE html><html><body style="font-family:system-ui;padding:40px;color:#64748b;text-align:center;">正在使用 Pandoc 与 KaTeX 渲染完整排版预览...</body></html>`;
+
+  try {
+    const res = await api.preview_chat_messages(title, selectedMsgs);
+    if (res.success && res.full_html) {
+      iframe.srcdoc = res.full_html;
+    } else {
+      iframe.srcdoc = `<!DOCTYPE html><html><body style="font-family:system-ui;padding:40px;color:#dc2626;text-align:center;">预览生成失败: ${escapeHtml(res.error || "未知错误")}</body></html>`;
+    }
+  } catch (e) {
+    iframe.srcdoc = `<!DOCTYPE html><html><body style="font-family:system-ui;padding:40px;color:#dc2626;text-align:center;">预览生成出错: ${escapeHtml(String(e))}</body></html>`;
+  }
+}
+
+function closeMergedPreview() {
+  document.getElementById("modal-merged-preview").style.display = "none";
+}
+
+// Save Selected & Modified Content as Markdown
+async function handleSaveMarkdown() {
+  if (!chatgptSession) return;
+  const selectedMsgs = chatgptSession.messages.filter(m => m.selected);
+  if (selectedMsgs.length === 0) {
+    alert("请至少勾选一条消息进行保存");
+    return;
+  }
+
+  const title = document.getElementById("doc-title").value.trim() || chatgptSession.title || "AI分享内容";
+  const safeName = title.replace(/[\\/*?:"<>|]/g, "_").trim() || "document";
+  const defFilename = `${safeName}.md`;
+
+  const targetPath = await api.choose_save_markdown_file("另存 Markdown", defFilename);
+  if (!targetPath) return;
+
+  updateStatus("running", "正在下载图片并保存 Markdown 文件...");
+  try {
+    const res = await api.save_markdown(targetPath, title, selectedMsgs);
+    if (res.success) {
+      updateStatus("ready", `Markdown 已另存至: ${res.path}`);
+      alert(`Markdown 文件已成功保存至:\n${res.path}\n\n配套图片保存在 images/ 相对目录。\n后续可以通过“单个文件”模式直接转换该 Markdown。`);
+    } else {
+      updateStatus("error", `保存失败: ${res.error}`);
+      alert(`保存 Markdown 失败: ${res.error}`);
+    }
+  } catch (e) {
+    updateStatus("error", `保存出错: ${e}`);
+    alert(`保存 Markdown 出错: ${e}`);
+  }
+}
+
 // Update summary meta count
 function updateFolderSummaryMeta() {
   if (currentMode !== "folder") return;
@@ -849,6 +1321,14 @@ function updateFolderSummaryMeta() {
 }
 
 function renderEmptyState() {
+  lastInspectData = null;
+  if (modeSettings[currentMode]) {
+    modeSettings[currentMode].inspectData = null;
+    modeSettings[currentMode].title = "";
+    modeSettings[currentMode].output = "";
+  }
+  document.getElementById("doc-title").value = "";
+  document.getElementById("output-path").value = "";
   setActionState("idle");
   updateStatus("ready", "生成进度将在此显示，诊断信息可展开查看。");
   document.getElementById("summary-meta").textContent = "尚未选择输入来源";
@@ -871,6 +1351,10 @@ async function handleCheckContent() {
     alert("请至少选择一个要合并的 Markdown 文件");
     return;
   }
+  if (currentMode === "chatgpt" && (!req.source_data.messages || req.source_data.messages.length === 0)) {
+    alert("请至少勾选一条要收录的消息");
+    return;
+  }
 
   updateStatus("running", "正在进行完整内容与完整性检查...");
   document.getElementById("btn-check-content").disabled = true;
@@ -879,6 +1363,8 @@ async function handleCheckContent() {
     const res = await api.check_only(req.source_type, req.source_path_or_url, {
       resource_root: req.source_data.resource_root,
       include_files: req.source_data.include_files,
+      messages: req.source_data.messages,
+      title: req.source_data.title,
       config_path: req.config_path,
       overrides: req.overrides,
     });
@@ -920,6 +1406,10 @@ async function handleStartBuild() {
   }
   if (currentMode === "folder" && (!req.source_data.include_files || req.source_data.include_files.length === 0)) {
     alert("请至少选择一个要合并的 Markdown 文件");
+    return;
+  }
+  if (currentMode === "chatgpt" && (!req.source_data.messages || req.source_data.messages.length === 0)) {
+    alert("请至少勾选一条要收录的消息");
     return;
   }
   if (!req.output) {

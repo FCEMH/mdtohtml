@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import http.client
 import ipaddress
 import socket
+import ssl
+import time
 import urllib.parse
 import urllib.request
 from typing import Tuple
@@ -12,6 +15,14 @@ from .proxy import desktop_proxy_handler
 DEFAULT_TIMEOUT = 15
 MAX_HTML_BYTES = 20 * 1024 * 1024  # 20 MB
 MAX_ASSET_BYTES = 30 * 1024 * 1024  # 30 MB
+
+
+def create_ssl_context() -> ssl.SSLContext:
+    """Create an SSL context tolerant to proxies closing without close_notify."""
+    ctx = ssl.create_default_context()
+    if hasattr(ssl, "OP_IGNORE_UNEXPECTED_EOF"):
+        ctx.options |= ssl.OP_IGNORE_UNEXPECTED_EOF
+    return ctx
 
 
 def is_safe_url(url: str, allowed_hosts: tuple[str, ...] | None = None) -> bool:
@@ -81,32 +92,52 @@ def fetch_url(
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
     }
-    req = urllib.request.Request(url, headers=headers)
-    opener = urllib.request.build_opener(
-        desktop_proxy_handler(), SafeRedirectHandler(allowed_hosts)
-    )
 
-    try:
-        with opener.open(req, timeout=timeout) as resp:
-            content_type = resp.headers.get("Content-Type", "")
-            data = resp.read(max_bytes + 1)
-            if len(data) > max_bytes:
-                raise BuildError(f"内容大小超过限制 ({max_bytes} 字节)", 2)
-            return data, content_type
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            raise BuildError("分享内容不存在或已失效 (HTTP 404)", 2) from e
-        elif e.code in (401, 403):
-            raise BuildError("分享内容需要登录或无权限访问 (HTTP 401/403)", 2) from e
-        else:
-            raise BuildError(f"获取网页失败 (HTTP {e.code})", 2) from e
-    except urllib.error.URLError as e:
-        if isinstance(e.reason, TimeoutError):
-            raise BuildError(
-                f"网络连接超时（单次等待 {timeout}s）；请检查网络或系统代理是否可用", 2
-            ) from e
-        raise BuildError(f"网络连接错误: {e.reason}", 2) from e
-    except TimeoutError as e:
-        raise BuildError(
-            f"网络连接超时（单次等待 {timeout}s）；请检查网络或系统代理是否可用", 2
-        ) from e
+    ssl_ctx = create_ssl_context()
+    max_retries = 3
+
+    for attempt in range(max_retries):
+        req = urllib.request.Request(url, headers=headers)
+        opener = urllib.request.build_opener(
+            desktop_proxy_handler(),
+            SafeRedirectHandler(allowed_hosts),
+            urllib.request.HTTPSHandler(context=ssl_ctx),
+        )
+
+        try:
+            with opener.open(req, timeout=timeout) as resp:
+                content_type = resp.headers.get("Content-Type", "")
+                data = resp.read(max_bytes + 1)
+                if len(data) > max_bytes:
+                    raise BuildError(f"内容大小超过限制 ({max_bytes} 字节)", 2)
+                return data, content_type
+        except urllib.error.HTTPError as e:
+            if e.code == 404:
+                raise BuildError("分享内容不存在或已失效 (HTTP 404)", 2) from e
+            elif e.code in (401, 403):
+                raise BuildError("分享内容需要登录或无权限访问 (HTTP 401/403)", 2) from e
+            elif attempt == max_retries - 1:
+                raise BuildError(f"获取网页失败 (HTTP {e.code})", 2) from e
+            time.sleep(0.5)
+        except urllib.error.URLError as e:
+            if isinstance(e.reason, TimeoutError):
+                if attempt == max_retries - 1:
+                    raise BuildError(
+                        f"网络连接超时（单次等待 {timeout}s）；请检查网络或系统代理是否可用", 2
+                    ) from e
+            elif attempt == max_retries - 1:
+                err_str = str(e.reason)
+                if "UNEXPECTED_EOF" in err_str or "violation of protocol" in err_str:
+                    raise BuildError(
+                        f"网络代理连接中断 ({err_str})；请检查代理节点状态或稍后重试", 2
+                    ) from e
+                raise BuildError(f"网络连接错误: {e.reason}", 2) from e
+            time.sleep(0.5)
+        except (TimeoutError, ConnectionResetError, http.client.RemoteDisconnected) as e:
+            if attempt == max_retries - 1:
+                raise BuildError(
+                    f"网络连接超时或中断（等待 {timeout}s）；请检查网络或系统代理是否可用", 2
+                ) from e
+            time.sleep(0.5)
+
+    raise BuildError("获取网页失败：多次尝试连接均未成功", 2)

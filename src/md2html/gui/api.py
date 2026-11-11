@@ -8,8 +8,16 @@ from pathlib import Path
 from typing import Any
 
 from ..jobs import job_manager
-from ..service import check_content, check_runtime, inspect_source
-from ..sources import ChatGPTShareSource, FileSource, FolderSource
+from ..service import (
+    check_content,
+    check_runtime,
+    inspect_source,
+    preview_chat_messages_service,
+    preview_source_service,
+    render_markdown_preview_service,
+    save_markdown_service,
+)
+from ..sources import ChatMessage, ChatGPTShareSource, FileSource, FolderSource
 from .settings import load_gui_settings, save_gui_settings
 
 
@@ -48,7 +56,6 @@ class BridgeAPI:
             if res:
                 chosen = res[0] if isinstance(res, (list, tuple)) else res
                 if chosen:
-                    save_gui_settings({"last_file": str(chosen), "last_folder": str(Path(chosen).parent)})
                     return str(chosen)
         except Exception as e:
             print(f"[GUI] choose_file error: {e}", file=sys.stderr)
@@ -68,7 +75,6 @@ class BridgeAPI:
             if res:
                 chosen = res[0] if isinstance(res, (list, tuple)) else res
                 if chosen:
-                    save_gui_settings({"last_folder": str(chosen)})
                     return str(chosen)
         except Exception as e:
             print(f"[GUI] choose_folder error: {e}", file=sys.stderr)
@@ -96,6 +102,30 @@ class BridgeAPI:
                     return str(chosen)
         except Exception as e:
             print(f"[GUI] choose_save_file error: {e}", file=sys.stderr)
+        return None
+
+    def choose_save_markdown_file(self, title: str = "另存 Markdown", default_filename: str = "document.md", default_dir: str = "") -> str | None:
+        """Open native save file dialog for markdown."""
+        if not self.window:
+            return None
+        import webview
+        try:
+            start_dir = default_dir if default_dir and Path(default_dir).exists() else ""
+            res = self.window.create_file_dialog(
+                webview.SAVE_DIALOG,
+                directory=start_dir,
+                save_filename=default_filename,
+                file_types=("Markdown (*.md)", "All files (*.*)"),
+            )
+            if res:
+                chosen = res if isinstance(res, str) else res[0]
+                if chosen:
+                    if not chosen.lower().endswith(".md"):
+                        chosen = f"{chosen}.md"
+                    save_gui_settings({"last_output_dir": str(Path(chosen).parent)})
+                    return str(chosen)
+        except Exception as e:
+            print(f"[GUI] choose_save_markdown_file error: {e}", file=sys.stderr)
         return None
 
     def inspect(self, source_type: str, path_or_url: str, options: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -137,7 +167,22 @@ class BridgeAPI:
                     include_files=options.get("include_files"),
                 )
             elif source_type == "chatgpt":
-                source = ChatGPTShareSource(url=path_or_url)
+                msgs = None
+                if options.get("messages") is not None:
+                    msgs = [
+                        ChatMessage(
+                            id=m.get("id", f"msg-{i}"),
+                            role=m.get("role", "unknown"),
+                            text=m.get("text", ""),
+                            author_name=m.get("author_name"),
+                        )
+                        for i, m in enumerate(options["messages"])
+                    ]
+                source = ChatGPTShareSource(
+                    url=path_or_url,
+                    messages=msgs,
+                    title=options.get("title"),
+                )
             else:
                 return {"success": False, "error": f"未知来源类型: {source_type}"}
 
@@ -152,6 +197,85 @@ class BridgeAPI:
                     "error_message": result.error_message,
                 },
             }
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def render_markdown_preview(self, markdown: str) -> dict[str, Any]:
+        """Render markdown text with Pandoc and KaTeX for real-time preview."""
+        return render_markdown_preview_service(markdown)
+
+    def preview_content(self, source_type: str, path_or_url: str, options: dict[str, Any] | None = None) -> dict[str, Any]:
+        """Generate in-memory HTML preview for any source type (file, folder, chatgpt)."""
+        options = options or {}
+        try:
+            if source_type == "file":
+                path = Path(path_or_url)
+                res_root = Path(options["resource_root"]) if options.get("resource_root") else None
+                source = FileSource(
+                    path=path,
+                    resource_root=res_root,
+                    explicitly_include=options.get("explicitly_include", False),
+                )
+            elif source_type == "folder":
+                source = FolderSource(
+                    root=Path(path_or_url),
+                    include_files=options.get("include_files"),
+                )
+            elif source_type == "chatgpt":
+                msgs = None
+                if options.get("messages") is not None:
+                    msgs = [
+                        ChatMessage(
+                            id=m.get("id", f"msg-{i}"),
+                            role=m.get("role", "unknown"),
+                            text=m.get("text", ""),
+                            author_name=m.get("author_name"),
+                        )
+                        for i, m in enumerate(options["messages"])
+                    ]
+                source = ChatGPTShareSource(
+                    url=path_or_url,
+                    messages=msgs,
+                    title=options.get("title"),
+                )
+            else:
+                return {"success": False, "error": f"未知来源类型: {source_type}"}
+
+            config_path = Path(options["config_path"]) if options.get("config_path") else None
+            overrides = options.get("overrides", {})
+            return preview_source_service(source, config_path=config_path, overrides=overrides)
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def preview_chat_messages(self, title: str, messages: list[dict[str, Any]]) -> dict[str, Any]:
+        """Format and preview merged chat messages."""
+        try:
+            chat_messages = [
+                ChatMessage(
+                    id=m.get("id", f"msg-{i}"),
+                    role=m.get("role", "unknown"),
+                    text=m.get("text", ""),
+                    author_name=m.get("author_name"),
+                )
+                for i, m in enumerate(messages)
+            ]
+            return preview_chat_messages_service(title, chat_messages)
+        except Exception as e:
+            return {"success": False, "error": str(e)}
+
+    def save_markdown(self, target_path: str, title: str, messages: list[dict[str, Any]]) -> dict[str, Any]:
+        """Save selected/edited chat messages as a standalone markdown file with companion images."""
+        try:
+            chat_messages = [
+                ChatMessage(
+                    id=m.get("id", f"msg-{i}"),
+                    role=m.get("role", "unknown"),
+                    text=m.get("text", ""),
+                    author_name=m.get("author_name"),
+                )
+                for i, m in enumerate(messages)
+            ]
+            return save_markdown_service(Path(target_path), title, chat_messages)
         except Exception as e:
             return {"success": False, "error": str(e)}
 

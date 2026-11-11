@@ -32,6 +32,8 @@ class FolderSource:
 @dataclass
 class ChatGPTShareSource:
     url: str
+    messages: list[ChatMessage] | None = None
+    title: str | None = None
 
 
 SourceSpec = FileSource | FolderSource | ChatGPTShareSource

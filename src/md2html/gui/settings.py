@@ -12,8 +12,6 @@ def load_gui_settings() -> dict[str, Any]:
     defaults = {
         "window_width": 1280,
         "window_height": 900,
-        "last_folder": str(Path.home()),
-        "last_file": "",
         "last_output_dir": str(Path.home()),
         "theme": "auto",
         "toc_depth": 3,
@@ -24,6 +22,9 @@ def load_gui_settings() -> dict[str, Any]:
     try:
         data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
         if isinstance(data, dict):
+            # Do not restore legacy last_folder or last_file
+            data.pop("last_folder", None)
+            data.pop("last_file", None)
             defaults.update(data)
     except Exception:
         pass
@@ -34,7 +35,8 @@ def save_gui_settings(settings: dict[str, Any]) -> None:
     try:
         SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
         current = load_gui_settings()
-        current.update(settings)
+        clean_settings = {k: v for k, v in settings.items() if k not in ("last_folder", "last_file")}
+        current.update(clean_settings)
         SETTINGS_FILE.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
     except Exception:
         pass

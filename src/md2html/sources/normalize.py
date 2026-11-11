@@ -88,19 +88,13 @@ def localize_images(
     return img_pattern.sub(repl, markdown)
 
 
-def messages_to_markdown(
+def format_messages_text(
     messages: list[ChatMessage],
-    title: str,
-    target_dir: Path,
-    report: Report,
-) -> tuple[Document, Path]:
-    """Normalize ChatGPT messages into a single Markdown file with front matter."""
-    target_dir.mkdir(parents=True, exist_ok=True)
-    images_dir = target_dir / "images"
-
+    title: str = "",
+) -> str:
+    """Format chat messages into unified markdown sections."""
     effective_title = title.strip()
     if not effective_title and messages:
-        # Check first line of first message
         first_line = messages[0].text.strip().splitlines()[0] if messages[0].text.strip() else ""
         if first_line.startswith("#"):
             effective_title = first_line.lstrip("#").strip()
@@ -112,7 +106,6 @@ def messages_to_markdown(
     # If single message from assistant
     if len(messages) == 1 and messages[0].role == "assistant":
         body = messages[0].text.strip()
-        # If body already starts with an H1 matching effective_title, don't duplicate
         first_line = body.splitlines()[0] if body else ""
         if not first_line.startswith("# "):
             sections.append(f"# {effective_title}\n\n{body}")
@@ -130,14 +123,37 @@ def messages_to_markdown(
             name_part = f" ({msg.author_name})" if msg.author_name else ""
             sections.append(f"## 消息 {i} · {role_label}{name_part}\n\n{msg.text.strip()}")
 
-    combined = "\n\n---\n\n".join(sections)
+    return "\n\n---\n\n".join(sections)
+
+
+def messages_to_markdown(
+    messages: list[ChatMessage],
+    title: str,
+    target_dir: Path,
+    report: Report,
+    filename: str | None = None,
+) -> tuple[Document, Path]:
+    """Normalize ChatGPT messages into a single Markdown file with front matter."""
+    target_dir.mkdir(parents=True, exist_ok=True)
+    images_dir = target_dir / "images"
+
+    effective_title = title.strip()
+    if not effective_title and messages:
+        # Check first line of first message
+        first_line = messages[0].text.strip().splitlines()[0] if messages[0].text.strip() else ""
+        if first_line.startswith("#"):
+            effective_title = first_line.lstrip("#").strip()
+        else:
+            effective_title = first_line[:40].strip() or "AI分享内容"
+
+    combined = format_messages_text(messages, effective_title)
     localized = localize_images(combined, images_dir, report)
 
     safe_title_for_yaml = effective_title.replace('"', '\\"')
     front_matter = f"---\ntitle: \"{safe_title_for_yaml}\"\n---\n\n"
     full_text = front_matter + localized
 
-    md_filename = f"{sanitize_filename(effective_title)}.md"
+    md_filename = filename or f"{sanitize_filename(effective_title)}.md"
     md_path = target_dir / md_filename
     md_path.write_text(full_text, encoding="utf-8")
 

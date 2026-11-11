@@ -57,6 +57,7 @@ def inspect_chatgpt_source(source: ChatGPTShareSource) -> dict:
                 "author_name": m.author_name,
                 "snippet": m.text[:120].strip(),
                 "chars": len(m.text),
+                "text": m.text,
             }
             for m in messages
         ],
@@ -71,13 +72,18 @@ def prepare_chatgpt_source(
     if report is None:
         report = Report()
 
-    valid_url = validate_chatgpt_url(source.url)
-    raw_data, _ = fetch_url(
-        valid_url,
-        allowed_hosts=("chatgpt.com", "chat.openai.com"),
-    )
-    html = raw_data.decode("utf-8", errors="replace")
-    messages, title = parse_chatgpt_html(html)
+    if source.messages is not None:
+        messages = source.messages
+        title = source.title or "ChatGPT 分享内容"
+        valid_url = source.url
+    else:
+        valid_url = validate_chatgpt_url(source.url)
+        raw_data, _ = fetch_url(
+            valid_url,
+            allowed_hosts=("chatgpt.com", "chat.openai.com"),
+        )
+        html = raw_data.decode("utf-8", errors="replace")
+        messages, title = parse_chatgpt_html(html)
 
     if not messages:
         raise BuildError("分享内容中未找到任何文本消息", 2)
